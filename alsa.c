@@ -1,55 +1,96 @@
+#include "mlib.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <alsa/asoundlib.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #define CAPT_BUF_SIZE 0x400
 
-#define R(...) " " #__VA_ARGS__ " "
+#define BUF_SIZE (CAPT_BUF_SIZE * sizeof (int16_t))
+int16_t buf[CAPT_BUF_SIZE * sizeof (int16_t)];
+volatile uint16_t sample;
+volatile int stream_end;
 
-#define ARR_LEN(x) (sizeof(x) / sizeof(*(x)))
-#define align(x, al) (size_t)((((x) / (al)) * (al)) + (((x) % (al)) ? (al) : 0))
-#define align_down(x, al) (size_t) (((x) / (al)) * (al))
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
-#define for_range(name, start, end) for (size_t name = start; name < end; name++)
+void *pthread_audio_process(void *audio) {
+    int16_t *audio_buf = audio;
+    uint16_t cur_sample = 0;
+    
+    while (1) {
+        pthread_mutex_lock(&mutex);
+        
+        while(cur_sample == sample % ARR_LEN(buf)) {
+            if (stream_end) {
+                pthread_exit(NULL);
+            }
+            
+            pthread_cond_wait(&cond, &mutex);
+        }
+        
+        if (cur_sample >= BUF_SIZE) {
+            cur_sample = 0;
+        }
+        
+        printf("Received: \n");
 
-#define ret_code(x)                                                            \
-  {                                                                            \
-    ret = x;                                                                   \
-    goto cleanup;                                                              \
-  }
+        for_range(i, 0, CAPT_BUF_SIZE) {
+            printf("%d  ", audio_buf[i + cur_sample]);
+        }
+        cur_sample += BUF_SIZE;
 
-#define ret_label(label, x)                                              \
-  {                                                                            \
-    ret = x;                                                                   \
-    goto label;                                                              \
-  }
+        pthread_mutex_unlock(&mutex);
+    }
 
-#define err(str) fprintf(stderr, str);
-#define error(str, ...) fprintf(stderr, str, __VA_ARGS__);
+    return NULL;
+}
 
-#define catch(err, ret)                                                  \
-  ;                                                                            \
-  if (ret) { \
-      fprintf(stderr, "%s:%d: " err ": %d\n", __FILE_NAME__, __LINE__, ret); \
-      ret_code(ret);                                                    \
-  }
+int audio_read(snd_pcm_t *handle) {
+    pthread_t fft_thread = {0};
+    int ret = {0};
+    ret = pthread_create(&fft_thread, NULL, &pthread_audio_process, (void *)buf);
+    /* pid_t fft_pid = fork(); */
 
-#define alsa_catch(err, ret) \
-;            \
-  if (ret < 0) { \
-      fprintf(stderr, "%s:%d: " err ": Alsa error: %s\n", __FILE_NAME__, __LINE__, snd_strerror(ret)); \
-      ret_code(ret);                                                    \
-  }
+    if (ret) {
+        err("Audio thread spawn failed");
+        return 1;
+    }
 
+    while (1) {
+        if (snd_pcm_avail(handle) >= CAPT_BUF_SIZE) {
+            if (snd_pcm_readi(handle, buf, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
+                err("Read error\n");
+                return 1;
+            }
+
+            sample += CAPT_BUF_SIZE;
+            if (sample >= BUF_SIZE) {
+                sample = 0;
+            }
+ 
+            pthread_cond_signal(&cond);
+        }
+
+        printf("%d ", buf[0]);
+    }
+
+    stream_end = 1;
+    pthread_cond_signal(&cond);
+    pthread_join(fft_thread, NULL);
+    
+  cleanup:
+    return ret;
+}
 
 int main(int argc, char **argv) {
     int ret = 0;
     snd_pcm_t *handle = {0};
     snd_pcm_hw_params_t *hw_params = {0};
-    int16_t *buf = malloc(sizeof (*buf) * CAPT_BUF_SIZE * 2);
     
-    ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, 0);
+    ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
     alsa_catch("Device initialization failed", ret);
 
     ret = snd_pcm_hw_params_malloc(&hw_params);
@@ -83,18 +124,8 @@ int main(int argc, char **argv) {
     alsa_catch("Failed to start the device", ret);
     sleep(1);
 
-    for (size_t i = 0; i < 200; i++) {
-        if (snd_pcm_readi(handle, buf, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
-            err("Read error\n");
-            return 1;
-        }
-
-        for_range(j, 0, CAPT_BUF_SIZE) {
-            printf("%d ", buf[j]);
-        }
-
-        putc('\n', stdout);
-    }
+    ret = audio_read(handle);
+    catch("", ret);
 
     printf("Hello world\n");
 
