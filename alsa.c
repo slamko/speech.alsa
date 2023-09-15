@@ -5,22 +5,40 @@
 #include <alsa/asoundlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <complex.h>
+#include <math.h>
 
 #define CAPT_BUF_SIZE 0x400
 
 #define BUF_SIZE (CAPT_BUF_SIZE * sizeof (int16_t))
-int16_t buf[CAPT_BUF_SIZE * sizeof (int16_t)];
+
+int16_t buf[BUF_SIZE * 8];
+
 volatile uint16_t sample;
 volatile int stream_end;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
+#define PI 3.14159
+
+void dft(complex float *dft, float *signal, size_t slen) {
+
+    for_range(k, 0, slen) {
+        dft[k] = 0;
+
+        for_range(n, 0, slen) {
+            dft[k] += signal[n] * cexp(-1 * I * 2 * PI * k * n / slen);
+        }
+    }
+}
+
 void *pthread_audio_process(void *audio) {
-    int16_t *audio_buf = audio;
     uint16_t cur_sample = 0;
     
-    while (1) {
+    /* while (1) { */
+    for_range(i, 0, 100) {
+        int16_t *audio_buf = &buf[cur_sample];
         pthread_mutex_lock(&mutex);
         
         while(cur_sample == sample % ARR_LEN(buf)) {
@@ -35,10 +53,10 @@ void *pthread_audio_process(void *audio) {
             cur_sample = 0;
         }
         
-        printf("Received: \n");
+        printf("\nReceived: \n");
 
         for_range(i, 0, CAPT_BUF_SIZE) {
-            printf("%d  ", audio_buf[i + cur_sample]);
+            printf("%d  ", audio_buf[i]);
         }
         cur_sample += BUF_SIZE;
 
@@ -59,11 +77,12 @@ int audio_read(snd_pcm_t *handle) {
         return 1;
     }
 
-    while (1) {
+    /* while (1) { */
+    for_range(i, 0, 100) {
         if (snd_pcm_avail(handle) >= CAPT_BUF_SIZE) {
-            if (snd_pcm_readi(handle, buf, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
+            if (snd_pcm_readi(handle, buf + sample, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
                 err("Read error\n");
-                return 1;
+                ret_code(1);
             }
 
             sample += CAPT_BUF_SIZE;
@@ -73,15 +92,13 @@ int audio_read(snd_pcm_t *handle) {
  
             pthread_cond_signal(&cond);
         }
-
-        printf("%d ", buf[0]);
     }
 
+  cleanup:
     stream_end = 1;
     pthread_cond_signal(&cond);
     pthread_join(fft_thread, NULL);
     
-  cleanup:
     return ret;
 }
 
@@ -128,6 +145,25 @@ int main(int argc, char **argv) {
     catch("", ret);
 
     printf("Hello world\n");
+
+    float inp_buf[33] = {0};
+    for_range(i, 0, ARR_LEN(inp_buf)) {
+        inp_buf[i] = (float)INT16_MAX * sin(((float)i / 32.0) * 2 * PI);
+    }
+    
+    size_t dft_len = 33;
+    complex float dft_buf[CAPT_BUF_SIZE] = {0};
+    dft(dft_buf, inp_buf, dft_len);
+
+    puts("\nINP: \n");
+    for_range(i, 0, dft_len) {
+        printf("%zu: %f \n", i, inp_buf[i]);
+    }
+
+    puts("\nDFT: \n");
+    for_range(i, 0, dft_len) {
+        printf("%zu: %f + j*%f \n", i, creal(dft_buf[i]) / (float)INT16_MAX, cimag(dft_buf[i]) / (float)INT16_MAX);
+    }
 
   cleanup:
     if (handle) snd_pcm_close(handle);

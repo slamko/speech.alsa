@@ -1,2 +1,2 @@
 all: alsa.c
-	gcc $< -lasound -o alsa
+	gcc $< -lasound -lpthread -lm -o alsa
