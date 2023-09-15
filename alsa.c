@@ -33,6 +33,28 @@ void dft(complex float *dft, float *signal, size_t slen) {
     }
 }
 
+void _ditfft(complex float *fft, size_t stride, float *signal, size_t slen) {
+    if (slen == 1) {
+        signal[0] = fft[0];
+        return;
+    }
+
+    _ditfft(fft, stride * 2, signal, slen / 2);
+    _ditfft(fft + stride, stride * 2, signal, slen / 2);
+
+    for_range(k, 0, slen / 2) {
+        float complex p = fft[k];
+        float complex q = cexp(-2*PI * I * k / slen);
+
+        fft[k] = p + q;
+        fft[k + slen / 2] = p - q;
+    }
+}
+
+void ditfft(complex float *fft, float *signal, size_t slen) {
+    return _ditfft(fft, 1, signal, slen);
+}
+
 void *pthread_audio_process(void *audio) {
     uint16_t cur_sample = 0;
     
