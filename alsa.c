@@ -33,25 +33,32 @@ void dft(complex float *dft, float *signal, size_t slen) {
     }
 }
 
-void _ditfft(complex float *fft, size_t stride, float *signal, size_t slen) {
+void _ditfft(float complex *fft, size_t stride, const float *signal, size_t slen) {
+    if (!slen) {
+        return;
+    }
+    
     if (slen == 1) {
-        signal[0] = fft[0];
+        fft[0] = signal[0];
         return;
     }
 
-    _ditfft(fft, stride * 2, signal, slen / 2);
-    _ditfft(fft + stride, stride * 2, signal, slen / 2);
+    size_t new_stride = stride * 2;
+    _ditfft(fft, new_stride, signal, slen / 2);
+    _ditfft(fft + slen / 2, new_stride, signal + stride, slen / 2);
 
     for_range(k, 0, slen / 2) {
-        float complex p = fft[k];
-        float complex q = cexp(-2*PI * I * k / slen);
+        float complex even = fft[k];
+        float complex odd = fft[k + slen / 2];
 
-        fft[k] = p + q;
-        fft[k + slen / 2] = p - q;
+        float complex q = cexp(-2*PI * I * k / slen) * odd;
+
+        fft[k] = even + q;
+        fft[k + slen/2] = even - q;
     }
 }
 
-void ditfft(complex float *fft, float *signal, size_t slen) {
+void ditfft(float complex *fft, const float *signal, size_t slen) {
     return _ditfft(fft, 1, signal, slen);
 }
 
@@ -129,6 +136,7 @@ int main(int argc, char **argv) {
     snd_pcm_t *handle = {0};
     snd_pcm_hw_params_t *hw_params = {0};
     
+    /*
     ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
     alsa_catch("Device initialization failed", ret);
 
@@ -167,15 +175,16 @@ int main(int argc, char **argv) {
     catch("", ret);
 
     printf("Hello world\n");
+    */
 
-    float inp_buf[33] = {0};
+    float inp_buf[32] = {0};
     for_range(i, 0, ARR_LEN(inp_buf)) {
-        inp_buf[i] = (float)INT16_MAX * sin(((float)i / 32.0) * 2 * PI);
+        inp_buf[i] = (float)INT16_MAX * (sin(((float)i / 4.0) * 2 * PI) + cos(((float)i / 8.0) * 2 * PI));
     }
     
-    size_t dft_len = 33;
-    complex float dft_buf[CAPT_BUF_SIZE] = {0};
-    dft(dft_buf, inp_buf, dft_len);
+    size_t dft_len = 32;
+    float complex dft_buf[CAPT_BUF_SIZE] = {0};
+    ditfft(dft_buf, inp_buf, dft_len);
 
     puts("\nINP: \n");
     for_range(i, 0, dft_len) {
