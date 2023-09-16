@@ -18,12 +18,25 @@ int16_t buf[BUF_SIZE * 8];
 size_t written_size;
 volatile uint16_t sample;
 volatile int stream_end;
-uint32_t srate = 48000;
+
+uint32_t srate = 16000;
+uint16_t nchan = 1;
+uint16_t bits_per_sample = 16;
 
 FILE *wave_file;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+
+int wav_set_file_size(void) {
+    fwrite_int(wave_file, uint32_t, written_size + 8);
+    printf("Wav: wrote bytes: %zu\n", written_size);
+
+    fseek(wave_file, 4, SEEK_SET);
+
+    fwrite_int(wave_file, uint32_t, written_size + 44);
+    return 0;
+}
 
 void *pthread_audio_process(void *audio) {
     uint16_t cur_sample = 0;
@@ -40,7 +53,6 @@ void *pthread_audio_process(void *audio) {
             }
             
             written_size += CAPT_BUF_SIZE * 2;
-        /* } */
         
         while(cur_sample == sample % ARR_LEN(buf)) {
             if (stream_end) {
@@ -70,8 +82,11 @@ void *pthread_audio_process(void *audio) {
 int audio_read(snd_pcm_t *handle) {
     pthread_t fft_thread = {0};
     int ret = {0};
-    ret = pthread_create(&fft_thread, NULL, &pthread_audio_process, (void *)buf);
+    /* ret = pthread_create(&fft_thread, NULL, &pthread_audio_process, (void *)buf); */
     /* pid_t fft_pid = fork(); */
+
+    int16_t lbuf[BUF_SIZE];
+
 
     if (ret) {
         err("Audio thread spawn failed");
@@ -84,8 +99,8 @@ int audio_read(snd_pcm_t *handle) {
             break;
         }
 
-        if (snd_pcm_avail(handle) >= CAPT_BUF_SIZE) {
-            if (snd_pcm_readi(handle, buf + sample, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
+        /* if (snd_pcm_avail(handle) >= CAPT_BUF_SIZE) { */
+            if (snd_pcm_readi(handle, lbuf, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
                 err("Read error\n");
                 ret_code(1);
             }
@@ -94,30 +109,28 @@ int audio_read(snd_pcm_t *handle) {
             if (sample >= BUF_SIZE) {
                 sample = 0;
             }
- 
-            pthread_cond_signal(&cond);
-        }
+
+            if (fwrite(lbuf, sizeof(*lbuf), CAPT_BUF_SIZE, wave_file) != CAPT_BUF_SIZE) {
+                err("Wave write error\n");
+                ret_code(1);
+            }
+            
+            written_size += CAPT_BUF_SIZE * sizeof (*lbuf);
+
+            /* pthread_cond_signal(&cond); */
+        /* } */
     }
 
   cleanup:
+    wav_set_file_size();
+    fclose(wave_file);
+    exit(0);
+
     stream_end = 1;
     pthread_cond_signal(&cond);
     pthread_join(fft_thread, NULL);
     
     return ret;
-}
-
-#define fwrite_str(file, str) fwrite(str, sizeof (char), sizeof(str) - 1, file)
-#define fwrite_int(file, type, integ) { type val = integ; fwrite(&val, sizeof (type), 1, file); }
-
-int wav_set_file_size(void) {
-    fwrite_int(wave_file, uint32_t, written_size + 8);
-    printf("Wav: wrote bytes: %zu\n", written_size);
-
-    fseek(wave_file, 4, SEEK_SET);
-
-    fwrite_int(wave_file, uint32_t, written_size + 44);
-    return 0;
 }
 
 int write_wav_header(void) {
@@ -128,20 +141,18 @@ int write_wav_header(void) {
 
     fwrite_int(wave_file, uint32_t, 16);
     fwrite_int(wave_file, uint16_t, 1);
-    fwrite_int(wave_file, uint16_t, 2);
+    fwrite_int(wave_file, uint16_t, nchan);
     fwrite_int(wave_file, uint32_t, srate);
-    fwrite_int(wave_file, uint32_t, srate * 16 * 2 / 8);
-    fwrite_int(wave_file, uint16_t, 4);
-    fwrite_int(wave_file, uint16_t, 16);
+    fwrite_int(wave_file, uint32_t, srate * bits_per_sample * nchan / 8);
+    fwrite_int(wave_file, uint16_t, bits_per_sample * nchan / 8);
+    fwrite_int(wave_file, uint16_t, bits_per_sample);
     fwrite_str(wave_file, "data");
 
     return 0;
 }
 
 void save_wave(int i) {
-    wav_set_file_size();
-    fclose(wave_file);
-    exit(0);
+    stream_end = 1;
 }
 
 int main(int argc, char **argv) {
@@ -163,7 +174,7 @@ int main(int argc, char **argv) {
 
     write_wav_header();
     
-    ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
+    ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, 0);
     alsa_catch("Device initialization failed", ret);
 
     ret = snd_pcm_hw_params_malloc(&hw_params);
@@ -184,7 +195,7 @@ int main(int argc, char **argv) {
 
     printf("Capture rate: %u\n", rate);
 
-    ret = snd_pcm_hw_params_set_channels(handle, hw_params, 2);
+    ret = snd_pcm_hw_params_set_channels(handle, hw_params, nchan);
     alsa_catch("Failed to set capture channel number", ret);
 
     ret = snd_pcm_hw_params(handle, hw_params);

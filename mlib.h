@@ -38,5 +38,10 @@
       ret_code(ret);                                                    \
   }
 
+#define fwrite_str(file, str) fwrite(str, sizeof (char), sizeof(str) - 1, file)
+#define fwrite_int(file, type, integ) { type val = integ; fwrite(&val, sizeof (type), 1, file); }
+
+
+
 
 #endif
