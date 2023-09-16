@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <complex.h>
 #include <math.h>
+#include <signal.h>
 
 #define CAPT_BUF_SIZE 0x400
 
@@ -14,61 +15,32 @@
 
 int16_t buf[BUF_SIZE * 8];
 
+size_t written_size;
 volatile uint16_t sample;
 volatile int stream_end;
+uint32_t srate = 48000;
+
+FILE *wave_file;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
-#define PI 3.14159
-
-void dft(complex float *dft, float *signal, size_t slen) {
-
-    for_range(k, 0, slen) {
-        dft[k] = 0;
-
-        for_range(n, 0, slen) {
-            dft[k] += signal[n] * cexp(-1 * I * 2 * PI * k * n / slen);
-        }
-    }
-}
-
-void _ditfft(float complex *fft, size_t stride, const float *signal, size_t slen) {
-    if (!slen) {
-        return;
-    }
-    
-    if (slen == 1) {
-        fft[0] = signal[0];
-        return;
-    }
-
-    size_t new_stride = stride * 2;
-    _ditfft(fft, new_stride, signal, slen / 2);
-    _ditfft(fft + slen / 2, new_stride, signal + stride, slen / 2);
-
-    for_range(k, 0, slen / 2) {
-        float complex even = fft[k];
-        float complex odd = fft[k + slen / 2];
-
-        float complex q = cexp(-2*PI * I * k / slen) * odd;
-
-        fft[k] = even + q;
-        fft[k + slen/2] = even - q;
-    }
-}
-
-void ditfft(float complex *fft, const float *signal, size_t slen) {
-    return _ditfft(fft, 1, signal, slen);
-}
-
 void *pthread_audio_process(void *audio) {
     uint16_t cur_sample = 0;
     
-    /* while (1) { */
-    for_range(i, 0, 100) {
-        int16_t *audio_buf = &buf[cur_sample];
+    while (1) {
+    /* for_range(i, 0, 100) { */
         pthread_mutex_lock(&mutex);
+        char *audio_buf = (char *)&buf[cur_sample];
+
+        /* if (audio_buf[0] < 10000) { */
+        if (fwrite(audio_buf, 1, 2 * CAPT_BUF_SIZE, wave_file) != 2 * CAPT_BUF_SIZE) {
+                err("Wave write error\n");
+                return NULL;
+            }
+            
+            written_size += CAPT_BUF_SIZE * 2;
+        /* } */
         
         while(cur_sample == sample % ARR_LEN(buf)) {
             if (stream_end) {
@@ -106,8 +78,12 @@ int audio_read(snd_pcm_t *handle) {
         return 1;
     }
 
-    /* while (1) { */
-    for_range(i, 0, 100) {
+    while (1) {
+    /* for_range(i, 0, 100) { */
+        if (stream_end) {
+            break;
+        }
+
         if (snd_pcm_avail(handle) >= CAPT_BUF_SIZE) {
             if (snd_pcm_readi(handle, buf + sample, CAPT_BUF_SIZE) != CAPT_BUF_SIZE) {
                 err("Read error\n");
@@ -131,12 +107,62 @@ int audio_read(snd_pcm_t *handle) {
     return ret;
 }
 
+#define fwrite_str(file, str) fwrite(str, sizeof (char), sizeof(str) - 1, file)
+#define fwrite_int(file, type, integ) { type val = integ; fwrite(&val, sizeof (type), 1, file); }
+
+int wav_set_file_size(void) {
+    fwrite_int(wave_file, uint32_t, written_size + 8);
+    printf("Wav: wrote bytes: %zu\n", written_size);
+
+    fseek(wave_file, 4, SEEK_SET);
+
+    fwrite_int(wave_file, uint32_t, written_size + 44);
+    return 0;
+}
+
+int write_wav_header(void) {
+    fwrite_str(wave_file, "RIFF");
+    fwrite_int(wave_file, uint32_t, 0);
+    fwrite_str(wave_file, "WAVE");
+    fwrite_str(wave_file, "fmt ");
+
+    fwrite_int(wave_file, uint32_t, 16);
+    fwrite_int(wave_file, uint16_t, 1);
+    fwrite_int(wave_file, uint16_t, 2);
+    fwrite_int(wave_file, uint32_t, srate);
+    fwrite_int(wave_file, uint32_t, srate * 16 * 2 / 8);
+    fwrite_int(wave_file, uint16_t, 4);
+    fwrite_int(wave_file, uint16_t, 16);
+    fwrite_str(wave_file, "data");
+
+    return 0;
+}
+
+void save_wave(int i) {
+    wav_set_file_size();
+    fclose(wave_file);
+    exit(0);
+}
+
 int main(int argc, char **argv) {
     int ret = 0;
     snd_pcm_t *handle = {0};
     snd_pcm_hw_params_t *hw_params = {0};
+
+    if (argc < 3) {
+        err("Invalid args\n");
+        return -1;
+    }
+
+    wave_file = fopen(argv[2], "w");
+
+    if (!wave_file) {
+        err("Can not open wave file\n");
+        return -1;
+    }
+
+    write_wav_header();
     
-    /*
     ret = snd_pcm_open(&handle, argv[1], SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
     alsa_catch("Device initialization failed", ret);
 
@@ -152,7 +178,7 @@ int main(int argc, char **argv) {
     ret = snd_pcm_hw_params_set_format(handle, hw_params, SND_PCM_FORMAT_S16_LE);
     alsa_catch("Failed to set capture format", ret);
 
-    unsigned int rate = 48000;
+    unsigned int rate = srate;
     ret = snd_pcm_hw_params_set_rate_near(handle, hw_params, &rate, NULL);
     alsa_catch("Failed to set capture rate", ret);
 
@@ -170,33 +196,22 @@ int main(int argc, char **argv) {
     ret = snd_pcm_start(handle);
     alsa_catch("Failed to start the device", ret);
     sleep(1);
+    struct sigaction save_act = {0};
+    save_act.sa_handler = &save_wave;
+    save_act.sa_flags = 0;
+
+    sigaction(SIGINT, &save_act, NULL);
+    sigaction(SIGKILL, &save_act, NULL);
 
     ret = audio_read(handle);
     catch("", ret);
 
+    wav_set_file_size();
+
     printf("Hello world\n");
-    */
-
-    float inp_buf[32] = {0};
-    for_range(i, 0, ARR_LEN(inp_buf)) {
-        inp_buf[i] = (float)INT16_MAX * (sin(((float)i / 4.0) * 2 * PI) + cos(((float)i / 8.0) * 2 * PI));
-    }
-    
-    size_t dft_len = 32;
-    float complex dft_buf[CAPT_BUF_SIZE] = {0};
-    ditfft(dft_buf, inp_buf, dft_len);
-
-    puts("\nINP: \n");
-    for_range(i, 0, dft_len) {
-        printf("%zu: %f \n", i, inp_buf[i]);
-    }
-
-    puts("\nDFT: \n");
-    for_range(i, 0, dft_len) {
-        printf("%zu: %f + j*%f \n", i, creal(dft_buf[i]) / (float)INT16_MAX, cimag(dft_buf[i]) / (float)INT16_MAX);
-    }
 
   cleanup:
+    fclose(wave_file);
     if (handle) snd_pcm_close(handle);
     if (hw_params) snd_pcm_hw_params_free(hw_params);
 
