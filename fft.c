@@ -39,6 +39,7 @@ void _ditfft(float complex *fft, size_t stride, const float *signal, size_t slen
         float complex odd = fft[k + slen / 2];
 
         float complex q = cexp(-2*PI * I * k / slen) * odd;
+        printf("Q %zu im: %f + j *%f\n", k, creal(odd), cimag(odd));
 
         fft[k] = even + q;
         fft[k + slen/2] = even - q;
@@ -49,13 +50,15 @@ void ditfft(float complex *fft, const float *signal, size_t slen) {
     return _ditfft(fft, 1, signal, slen);
 }
 
+#define FFT_SIZE 16
+
 void test() {
-    float inp_buf[32] = {0};
+    float inp_buf[FFT_SIZE] = {0};
     for_range(i, 0, ARR_LEN(inp_buf)) {
-        inp_buf[i] = (float)INT16_MAX * (sin(((float)i / 4.0) * 2 * PI) + cos(((float)i / 8.0) * 2 * PI));
+        inp_buf[i] = (float)255 * sin(((float)i / (float)FFT_SIZE) * 2. * 2. * PI);
     }
     
-    size_t dft_len = 32;
+    size_t dft_len = FFT_SIZE;
     float complex dft_buf[CAPT_BUF_SIZE] = {0};
     ditfft(dft_buf, inp_buf, dft_len);
 
@@ -70,4 +73,10 @@ void test() {
     }
 
 
+}
+
+int main() {
+    test();
+
+    return 0;
 }
